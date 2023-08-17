@@ -92,9 +92,12 @@ log_income <- income%>%
   select(-income_prop, -income)
 
 tbbl <- inner_join(log_income, log_skills)%>%
+  inner_join(jo)%>%
+  select(-jo_prop)%>%
   column_to_rownames("noc")
 
-mod <- lm(Income ~ ., data=tbbl)
+mod <- lm(Income ~ . -job_openings, data=tbbl)
+weighted_mod <- lm(Income ~ . -job_openings, weights = job_openings, data=tbbl)
 
 sorted_estimates <- mod%>%
   tidy()%>%
@@ -103,4 +106,10 @@ sorted_estimates <- mod%>%
   mutate(av_plot=map(term, av_wrapper))%>%
   write_rds(here("out","sorted_estimates.rds"))
 
+weighted_sorted_estimates <- weighted_mod%>%
+  tidy()%>%
+  filter(term!="(Intercept)")%>%
+  arrange(desc(estimate))%>%
+  mutate(av_plot=map(term, av_wrapper))%>%
+  write_rds(here("out","weighted_sorted_estimates.rds"))
 

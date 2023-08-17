@@ -2,7 +2,10 @@
 title: "I've got skills, they're multiplying..."
 author: "Richard Martin"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
 ---
 
 ```{r setup, include=FALSE}
@@ -10,10 +13,12 @@ knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(here)
 library(vroom)
+library(patchwork)
 skills_long <- vroom(here("out","skills_long.csv"))
 skills <- vroom(here("out","skills.csv"))
 just_skills <- read_rds(here("out", "just_skills.rds"))
 sorted_estimates <- read_rds(here("out", "sorted_estimates.rds"))
+weighted_sorted_estimates <- read_rds(here("out", "weighted_sorted_estimates.rds"))
 ```
 
 ![53120: Dancers](grease.jpg)
@@ -62,11 +67,11 @@ ONET skill data is collected through a combination of methods, including expert 
 
 Workers, supervisors and subject matter experts are asked about the importance and level of the 35 different skills: e.g.
 
-onet_question.png)
+![](onet_question.png)
 
 ## First look at the data:
 
-So we have skills data (importance and level) for `r length(unique(skills_long$noc))` occupations.  Lets have a look at the distribution of the data.  
+So we have skills data (importance and level) for `r length(unique(skills_long$noc))` occupations. Lets have a look at the distribution of the data.
 
 ```{r}
 skills_long%>%
@@ -79,7 +84,7 @@ skills_long%>%
   facet_wrap(~scale_name)
 ```
 
-Looks like distributions are similar for importance and level... maybe the measures are correlated?  
+Looks like distributions are similar for importance and level... maybe the measures are correlated?
 
 ```{r, fig.width=9}
 skills_long%>%
@@ -91,7 +96,7 @@ skills_long%>%
 
 It is kind of a pain having two measures of skill (importance and level), especially given that they are highly correlated. One option would be to choose a measure, and discard the other. Nevertheless, importance and level are not *perfectly* correlated, so choosing one would amount to discarding some information. For the remainder we will use a composite measure that we will call *skill*.
 
-$$skill=\sqrt{level \times importance}$$ 
+$$skill=\sqrt{level \times importance}$$
 
 Two things to note: this specification is the geometric mean of level and importance, and level and importance are (imperfect) compliments in the creation of the variable $skill$.
 
@@ -101,14 +106,13 @@ Two things to note: this specification is the geometric mean of level and import
 heatmaply::heatmaply(just_skills, showticklabels=c(FALSE, FALSE))
 ```
 
-
 ## Weighted averages of the Skills data:
 
-The heatmap above is somewhat overwhelming, with 35 measures of skill for `r length(unique(skills_long$noc))` occupations. We can reduce this complexity by creating a weighted average across all occupations.  We consider two weighting variables:
+The heatmap above is somewhat overwhelming, with 35 measures of skill for `r length(unique(skills_long$noc))` occupations. We can reduce this complexity by creating a weighted average across all occupations. We consider two weighting variables:
 
 ### Job Openings:
 
-Perhaps the most obvious way of aggregating the skill data is using weights based on predicted job openings: doing so puts a large weight on occupations that are predicted to have many job openings, with a smaller weight on occupations with low job openings. 
+Perhaps the most obvious way of aggregating the skill data is using weights based on predicted job openings: doing so puts a large weight on occupations that are predicted to have many job openings, with a smaller weight on occupations with low job openings.
 
 ### Income:
 
@@ -126,33 +130,45 @@ plotly::ggplotly(plt, tooltip="text")%>%
   plotly::config(displayModeBar = FALSE)
 ```
 
-Note that there are many job openings in relatively low skill occupations: e.g. Retail salespersons. In contrast, income levels are high in relatively high skill occupations: e.g. Judges. As a result, the weighted average skills (by income) exceeds the weighted average skills (by job openings), and most of the data points are above the 45 degree line.  Nevertheless, the data tells a similar story regarding the relative importance of skills, regardless of whether we weight by job openings or income.
+Note that there are many job openings in relatively low skill occupations: e.g. Retail salespersons. In contrast, income levels are high in relatively high skill occupations: e.g. Judges. As a result, the weighted average skills (by income) exceeds the weighted average skills (by job openings), and most of the data points are above the 45 degree line. Nevertheless, the data tells a similar story regarding the relative importance of skills, regardless of whether we weight by job openings or income.
 
 ## Relationship between skills and income
 
 One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their potential income, then it makes sense to invest in the skills that are most highly valued by employers. We can use hedonic estimation to estimate the elasticity of skills on income: i.e. holding all other skills constant, a 1% increase in skill is associated with a X% change in income.
 
-```{r}
+```{r, fig.width=10}
 #plot all the elasticities---------------------------
-sorted_estimates%>%
+ordinary <- sorted_estimates%>%
    mutate(term=str_replace_all(term,"`",""))%>%
    ggplot(aes(estimate, fct_reorder(term, estimate)))+
    geom_col()+
    labs(x="Skill Income Elasticities",
         y="",
-        title="1% increase in skill ~ X% change in income")+
+        subtitle="unweighted (OLS)")+
    theme_minimal()
+
+weighted <- weighted_sorted_estimates%>%
+   mutate(term=str_replace_all(term,"`",""))%>%
+   ggplot(aes(estimate, fct_reorder(term, estimate)))+
+   geom_col()+
+   labs(x="Skill Income Elasticities",
+        y="",
+        subtitle="weighted by job openings (WLS)")+
+   theme_minimal()
+
+ordinary+weighted+plot_annotation("1% increase in skill ~ X% change in income")
 ```
 
-Hedonic estimation paints a much different picture than weighting the data.  Consider the skill speaking. This skill is ranked as one of the top skills regardless of whether we weight by job openings or income.  Nevertheless, the occupations for which speaking is  most important tend to have lower income levels, which results in a negative association between the skill of speaking and income.
+Hedonic estimation paints a much different picture than aggregating the data. Consider the skill speaking.
+When we aggregate the skill data, the skill of speaking is important for most occupations, resulting in a high aggregate score, regardless of how we weight the data when aggregating.  Hedonic estimation does something quite different.  Hedonic estimation finds that when the skill of speaking is abnormally high (compared with other occupations) income is abnormally low (compared with other occupations).  So while the skill of speaking is universally important, its relationship to income is negative. 
 
-Note that these elasticities are *not* useful information if you are already happily matched in the labour market.  Once matched, the optimal skills to invest in are those in which you are relatively deficient when compared to the skill profile of the position.  Rectifying your skill deficiencies improves the match, results in more surplus being created, of which you might receive a portion. 
+Note that these elasticities are *not* useful information if you are already happily matched in the labour market. Once matched, the optimal skills to invest in are those in which you are relatively deficient when compared to the skill profile of the position. Rectifying your skill deficiencies improves the match, results in more surplus being created, of which you might receive a portion.
 
-As a guide for what skills to invest in, these elasticities are only relevant for those who are not happily matched. (job seekers and those considering a career change). Even so, these elasticities are not causal effects: you should *not* expect your income to increase by X% if you increase your skill by 1%.  
+As a guide for what skills to invest in, these elasticities are only relevant for those who are not happily matched. (job seekers and those considering a career change). Even so, these elasticities are not causal effects: you should *not* expect your income to increase by X% if you increase your skill by 1%.
 
 ## Added Variable Plots:
 
-The plot of the elasticities (above) hides how much randomness there is in the data. Lets look closer at the two skills that have the strongest association (positive and negative) with income. In an added variable plot the y axis is the residual from regressing income on all other skills. The x axis is the residual from regressing the skill on all other skills. The best fit line through this cloud of residuals has the same slope as in the multiple linear regression[^1].  In the case of log-log transformed data, the slope of this line is the elasticity.  The added variable plots make it clear that there is a lot of noise in the data, and we should be suspicious of the results. 
+The plot of the elasticities (above) hides how much randomness there is in the data. Lets look closer at the two skills that have the strongest association (positive and negative) with income. In an added variable plot the y axis is the residual from regressing income on all other skills. The x axis is the residual from regressing the skill on all other skills. The best fit line through this cloud of residuals has the same slope as in the multiple linear regression[^1]. In the case of log-log transformed data, the slope of this line is the elasticity. The added variable plots make it clear that there is a lot of noise in the data, and we should be suspicious of the results.
 
 [^1]: Frisch--Waugh--Lovell theorem.
 
@@ -163,3 +179,14 @@ sorted_estimates$av_plot[[1]]
 ```{r}
 sorted_estimates$av_plot[[35]]
 ```
+
+## Weighted Added Variable plots:
+
+```{r}
+weighted_sorted_estimates$av_plot[[1]]
+```
+
+```{r}
+weighted_sorted_estimates$av_plot[[35]]
+```
+
