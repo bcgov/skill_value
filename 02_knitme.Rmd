@@ -1,0 +1,357 @@
+---
+title: "I've got skills, they're multiplying..."
+author: "Richard Martin"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+bibliography: references.bib 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+#libraries---------------
+library(tidyverse)
+library(here)
+library(janitor)
+library(broom)
+library(readxl)
+#constants---------------------
+jo_start <- "2024"
+jo_end <- "2033"
+#functions---------------
+av_wrapper <- function(term, mod){
+  car::avPlot(mod, variable=term)
+  recordPlot()
+}
+get_noc <- function(str){
+   temp <- as.data.frame(str_split_fixed(str, " ", 2))
+  colnames(temp) <- c("noc","description")
+  temp <- temp%>%
+    select(-description)
+  temp
+}
+# the program------------------------
+mapping <- read_excel(here("data","onet2019_soc2018_noc2016_noc2021_crosswalk.xlsx"))%>%
+  mutate(noc2021=str_pad(noc2021, "left", pad="0", width=5))%>%
+  unite(noc, noc2021, noc2021_title, sep=": ")%>%
+  select(noc, o_net_soc_code = onetsoc2019)%>%
+  distinct()
+
+skills_long <- read_excel(here("data", "Skills.xlsx"))%>%
+  clean_names()%>%
+  select(o_net_soc_code, element_name, scale_name, data_value)%>%
+  inner_join(mapping)%>%
+  select(-o_net_soc_code)%>%
+  select(noc, everything())%>%
+  group_by(noc, element_name, scale_name)%>%
+  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE))) #mapping from SOC to NOC is not one to one: mean give one value per NOC
+
+skill_dif <- skills_long%>%
+  pivot_wider(id_cols = c(noc, element_name), names_from = scale_name, values_from = data_value)%>%
+  mutate(abs_diff=abs(Importance-Level))
+
+#job openings-------------------
+
+jo_weight <- read_excel(here("data", "jo_rich.xlsx"), skip = 3)%>%
+  janitor::remove_constant()%>%
+  pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "jo")%>%
+  filter(year>=jo_start)%>%
+  group_by(NOC, Description)%>%
+  summarize(job_openings=sum(jo))%>%
+  filter(NOC!="#T")%>%
+  mutate(NOC=str_replace_all(NOC, "#",""))%>%
+  unite(noc, "NOC","Description", sep=": ")%>%
+  ungroup()%>%
+  mutate(job_openings=if_else(job_openings<0,0,job_openings),
+    jo_weight=job_openings/sum(job_openings))%>%
+  select(-job_openings)
+
+#employment----------------------------------------
+
+emp_weight <- vroom::vroom(here("data","employment.csv"), skip = 2)%>%
+  filter(Industry=="All industries",
+         `Geographic Area`=="British Columbia",
+         NOC!="#T")%>%
+  mutate(NOC=str_replace_all(NOC, "#",""))%>%
+  unite(noc, "NOC","Description", sep=": ")%>%
+  mutate(emp_weight=`2023`/sum(`2023`))%>%
+  select(noc, emp_weight)
+
+both <- full_join(emp_weight, jo_weight)
+jo_emp_cor <- with(both, round(cor(jo_weight, emp_weight), 2))
+
+#income data--------------------------
+
+income_fyft <- read_excel(here("data","median_income_jackie.xlsx"),
+                     skip=6,
+                    col_names = FALSE,
+                     na = c("x","..."))
+colnames(income_fyft) <- c("noc","everybody", "income")
+income_fyft <- income_fyft%>%
+    mutate(nocdf=map(noc, get_noc), .before = noc)%>%
+    select(-noc, -everybody)%>%
+    unnest(nocdf)
+
+# create skill measure-----------------
+
+skills <- skills_long%>%
+  pivot_wider(names_from = scale_name, values_from = data_value)%>%
+  mutate(composite=sqrt(Level*Importance))
+
+joined <- inner_join(skills, jo_weight)%>%
+  inner_join(emp_weight)%>%
+  group_by(element_name)%>%
+  summarize(future_importance=sum(Importance*jo_weight),
+            future_level=sum(Level*jo_weight),
+            future_composite=sum(composite*jo_weight),
+            current_importance=sum(Importance*emp_weight),
+            current_level=sum(Level*emp_weight),
+            current_composite=sum(composite*emp_weight)
+            )
+
+tbbl <- joined%>%
+  pivot_longer(cols=-element_name)|>
+  separate(name, c("when","thing"), sep="_")%>%
+  pivot_wider(id_cols = c(element_name, thing), names_from = when, values_from = value)%>%
+  mutate(diff=future-current)
+
+#income semi-elasticities--------------------------
+
+hedonic_data <- skills_long%>%
+  filter(scale_name=="Level")%>%
+  pivot_wider(id_cols = noc, names_from = element_name, values_from = data_value)%>%
+  inner_join(emp_weight)%>%
+  separate(noc, into=c("noc","description"), sep = ": ")%>%
+  inner_join(income_fyft)%>%
+  mutate(income=log(income))%>%
+  unite(noc, noc, description, sep=": ")%>%
+  column_to_rownames("noc")
+
+weighted <- lm(income~ . -emp_weight, weights = emp_weight, data=hedonic_data)
+unweighted <- lm(income~ . -emp_weight,  data=hedonic_data)
+
+
+sorted_weighted <- weighted%>%
+  tidy()%>%
+  filter(term!="(Intercept)")%>%
+  mutate(percent_change=exp(estimate)-1)%>%
+  arrange(desc(estimate))%>%
+  mutate(av_plot=map(term, av_wrapper, weighted),
+         term=str_replace_all(term, "`",""))
+
+
+```
+
+![53120: Dancers](grease.jpg)
+
+## Why is skill data important?
+
+1)  Career Planning: Job seekers can use this information to understand the skills needed for different careers and assess whether their current skill set aligns with their desired occupation.
+
+2)  Workforce Development: Educators and training providers can use skill data to design relevant curricula and programs that address the specific skill needs of industries and occupations.
+
+3)  Employee Training: Employers can identify the skills required for specific job roles and develop targeted training programs to enhance the skills of their workforce.
+
+4)  Labor Market Analysis: Policymakers and researchers can use skill data to analyze the labor market and identify trends in demand and supply.
+
+In a nutshell we should care about skills because labour is not fungible: we all differ in terms of the skills, knowledge and experience we possess. Likewise, employers are not simply looking for someone with a pulse: for every position there is a unique bundle of skills, knowledge and experience which would maximize the value of the match. The better the match, the greater the surplus that can be shared between the employer and the employee.
+
+## ONET Skills
+
+The Occupational Information Network (ONET) is a comprehensive database developed by the U.S. Department of Labor that provides detailed information about various occupations. One of the key components of ONET is the Skills section, which categorizes the skills required for different job roles. ONET's Skills data includes a wide range of skills that are relevant to specific occupations, helping individuals, employers, educators, and policymakers understand the skill requirements of different jobs and industries.
+
+ONET Skills data is organized into several categories:
+
+1)  Basic Skills: These are fundamental skills that are applicable to many different jobs. Examples include reading comprehension, active listening, writing, mathematics, and critical thinking.
+
+2)  Cross-Functional Skills: These skills are more specific than basic skills and may be applicable across various occupations. They include skills like communication, teamwork, problem-solving, adaptability, and creativity.
+
+3)  Technical Skills: These skills are job-specific and relate directly to the tasks and functions of a particular occupation. Technical skills can encompass a wide range of abilities, such as programming, operating machinery, using specialized software, and conducting scientific research.
+
+4)  Job-Related Skills: These skills are directly related to the tasks and responsibilities of a specific job. For instance, a surgeon would require skills like surgical procedures, medical diagnosis, and patient care.
+
+5)  Tools and Technology Skills: This category lists the tools, equipment, and technology that individuals in a particular occupation are expected to use. It includes skills related to operating machinery, software programs, and specialized instruments.
+
+6)  Knowledge Areas: While not skills per se, knowledge areas are also covered in ONET data. These include subjects like mathematics and science that are essential for performing various job functions.
+
+ONET skill data is collected through a combination of methods, including expert analysis, job analysis surveys, occupational research, and data aggregation. The process involves input from various stakeholders, including industry experts, workers, employers, and training providers. Here's an overview of how ONET skill data is collected:
+
+1)  Job Analysis Surveys: Job analysis surveys are a primary method for collecting data on the skills required for different occupations. ONET relies on surveys administered to workers, supervisors, and subject matter experts who are familiar with the tasks, responsibilities, and skill requirements of specific jobs. These surveys gather information about the skills that are critical to performing job tasks effectively.
+
+2)  Subject Matter Experts (SMEs): ONET collaborates with subject matter experts who have in-depth knowledge and experience in various industries and occupations. These experts provide valuable insights into the skills that are most relevant and important for specific job roles.
+
+3)  Occupational Research: ONET researchers study various industries and occupations to identify emerging trends, technological advancements, and changes in skill requirements. This research helps ensure that ONET's skill data remains current and aligned with the evolving demands of the labor market.
+
+4)  Existing Data Sources: ONET also aggregates information from existing sources, such as industry reports, job postings, and training programs. This data helps supplement the skill information gathered through surveys and expert input.
+
+## Job Analysis Survey
+
+Workers, supervisors and subject matter experts are asked about the importance and level of the 35 different skills: e.g.
+
+![](onet_question.png)
+
+## A composite measure of skills
+
+So we have two different measures of each skill: its level and importance.  It would be nice to have a single measure that captures both the level and the importance.  To do so we take the geometric mean of these two measures: 
+
+$$composite=\sqrt{level \times importance}$$
+
+The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 3 and a level of 5 yields a lower composite measure than if both measures were 4: the difference between level and importance is penalized.  Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
+
+
+```{r}
+hist(skill_dif$abs_diff,
+     main="Level and Importance are within +/- 1 for almost all values",
+     xlab="|Importance-Level|")
+```
+
+
+
+
+## Skills in the BC context
+
+So we have skills data for 500 odd occupations, but what we are interested in is the average current and future skill profiles for BC.  For the current skill profile, we can weight the skills by the proportion of British Columbians employed in each occupation.  For the future skill profile, we can weigh the skills by projected job openings.  Note that current employment and projected job openings are highly correlated:
+
+```{r, warning=FALSE}
+plt0 <- ggplot(both, aes(jo_weight,
+                         emp_weight, 
+                         text=paste0(noc, 
+                                     "\n Future weight = ",
+                                     scales::percent(jo_weight, accuracy = .1), 
+                                     "\n Current weight = ",
+                                      scales::percent(emp_weight, accuracy = .1))))+
+  geom_abline(slope=1, intercept = 0, col="white", lwd=2)+
+  geom_point(alpha=.1)+
+  scale_x_continuous(trans="log", labels=scales::percent)+
+  scale_y_continuous(trans="log", labels=scales::percent)+
+  labs(x="weights based on job openings",
+       y="weights based on employment",
+       title=paste("Correlation between current employment and job openings: ", jo_emp_cor)
+       )
+
+plotly::ggplotly(plt0, tooltip = "text")
+```
+
+First thing we can do is compare the current and future average skills data.  Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal.  From the plot below you can see that for the the composite score, the skills with the highest scores when weighted by job openings are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
+
+```{r}
+plt1 <- ggplot(tbbl, aes(current, future, text=element_name))+
+  geom_abline(slope=1, intercept = 0, col="white", lwd=1)+
+  geom_point(alpha=.25, size=3)+
+  facet_wrap(~thing)+
+  labs(title="Skills: Important now vs. Important in future.",
+       x="Skills weighted by current employment",
+       y="Skills weighted by job openings")
+
+plotly::ggplotly(plt1, tooltip = "text")
+```
+
+In the plot above it is difficult to ascertain the difference in average skills when weighting by job openings or employment.  The difference is more apparent when plotted against the current average skill, allowing us to see the skills for which the difference is *relatively* large.  However, note that the scale of the difference is quite small relative to the average skill scores: this is the result of projected job openings being highly correlated with current employment. 
+
+```{r}
+plt2 <- ggplot(tbbl, aes(current, diff, text=element_name))+
+  geom_abline(slope=0, intercept = 0, col="white", lwd=1)+
+  geom_point(alpha=.25, size=3)+
+  facet_wrap(~thing)+
+  labs(title="Skills: Important now vs. projected difference.",
+       x="Skills weighted by current employment",
+       y="Future weighted skills - current weighted skills")
+
+plotly::ggplotly(plt2, tooltip = "text")
+```
+
+These differences between current (employment) weighted and future (job openings) weighted average skill profiles gives an indication of how the BC average skill profile is set to change over the next 10 years.  We see that...
+
+```{r}
+ggplot(tbbl, aes(diff, fct_reorder(element_name, diff)))+
+  geom_col(alpha=.5)+
+  facet_wrap(~thing)+
+  labs(title="Difference between future and current weighted skills",
+       x="skills weighted by job openings - skills weighted by employment",
+       y="")
+```
+
+## Relationship between skill *level* and wage rate (income for now, wages come November)
+
+One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. We can use hedonic estimation to estimate the wage semi-elasticities with the model:
+
+$$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times Skill_i + \epsilon$$
+i.e. holding all other skills constant, a 1 unit increase in skill $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. 
+
+## Regression results
+
+We run two models:  first an un-weighted plain vanilla OLS regression (every occupation is equally important), and second a weighted least squares regression, where the weights are the current employment levels:  This puts a large weight on occupations where there are many people with that occupation, and a small weight on occupations where there are few.
+
+```{r, results='asis'}
+models <- list(OLS=unweighted, WLS=weighted)
+texreg::htmlreg(models, 
+                custom.coef.names=str_replace_all(names(weighted[["coefficients"]]),"`",""),
+                caption="Regression Results")
+```
+
+## Diagnostic plots of weighted regression
+
+```{r, fig.height=8, fig.width=8}
+par(mfrow=c(2,2))
+plot(weighted, ask = FALSE)
+```
+
+* Residuals vs. Fitted: no obvious relationship between residuals and fitted values, which is good.
+* Q-Q residuals: Non normal residuals (fat tailed distribution), which is bad for inference, but because we have more than 10 observations per parameter we are ok: @weisberg2005applied.  
+* Scale-Location: looks ok, but might as well check for heteroskedasticity... all good.
+
+```{r, results='asis'}
+lmtest::bptest(weighted)
+```
+
+* Residuals vs. Leverage: No residuals with a Cook's distance greater than .5. Outliers not a problem.
+
+
+## Effect size
+
+Below are the effect sizes, with the regression p.values determining shade (dark ~ low p.value)
+
+```{r}
+ggplot(sorted_weighted, aes(x=percent_change,
+                            y=fct_reorder(term,percent_change),
+                            fill=p.value
+                            )
+       )+
+  geom_col()+
+  scale_fill_gradient(high = alpha("grey30", .05), low = alpha("grey30",.75),
+                       name = "p.value")+
+  scale_x_continuous(labels=scales::percent)+
+  labs(x="Change in income associated with 1 unit increase in skill level",
+       y="",
+       title="Hedonic Estimates")+
+  theme_minimal()
+```
+
+## Residuals and compensating wage differentials
+
+Skill is not the only factor that determines wages.  Some jobs are dangerous or otherwise unpleasant, and require a greater wage than skill alone would predict. At the other end of the spectrum are jobs that are fun, requiring a lower wage than skill alone would predict [@smith1776inquiry]. The next plot shows the occupations with the largest residuals from the weighted regression.  
+
+```{r}
+residuals <- enframe(weighted$residuals)|>
+  filter(abs(value)>.5)
+plt <- ggplot(residuals, aes(value, fct_reorder(name,value), text=name))+geom_point(alpha=.25)+
+     theme(axis.title.y =element_blank(),
+           axis.text.y=element_blank(),
+           axis.ticks.y=element_blank())+
+  labs(title="The occupations with the largest residuals",
+    x="residuals")
+ 
+ plotly::ggplotly(plt, tooltip = "text")
+```
+
+
+
+
+
+# References
+
+
+
+
