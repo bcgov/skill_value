@@ -144,7 +144,8 @@ sorted_weighted <- weighted%>%
 
 ```
 
-![53120: Dancers](grease.jpg)
+![53120: Dancers](grease.mp4)
+
 
 ## Why is skill data important?
 
@@ -194,7 +195,7 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ## A composite measure of skills
 
-So we have two different measures of each skill: its level and importance.  It would be nice to have a single measure that captures both the level and the importance.  To do so we take the geometric mean of these two measures: 
+So we have two different measures of each skill: its level and importance.  It would be nice to have a single measure that captures both the level and the importance.  To do so we take the geometric mean of these two measures.
 
 $$composite=\sqrt{level \times importance}$$
 
@@ -212,7 +213,7 @@ hist(skill_dif$abs_diff,
 
 ## Skills in the BC context
 
-So we have skills data for 500 odd occupations, but what we are interested in is the average current and future skill profiles for BC.  For the current skill profile, we can weight the skills by the proportion of British Columbians employed in each occupation.  For the future skill profile, we can weigh the skills by projected job openings.  Note that current employment and projected job openings are highly correlated:
+So we have skills data for 500 odd occupations, but what we are interested in is the average current and future skill profiles for BC.  For the current skill profile, we can weight the skills by the proportion of British Columbians employed in each occupation.  For the future skill profile, we can weigh the skills by projected job openings.  Note that current employment and projected job openings are highly correlated: r=`r jo_emp_cor`.
 
 ```{r, warning=FALSE}
 plt0 <- ggplot(both, aes(jo_weight,
@@ -228,22 +229,22 @@ plt0 <- ggplot(both, aes(jo_weight,
   scale_y_continuous(trans="log", labels=scales::percent)+
   labs(x="weights based on job openings",
        y="weights based on employment",
-       title=paste("Correlation between current employment and job openings: ", jo_emp_cor)
+       title="Future vs. Current weights."
        )
 
 plotly::ggplotly(plt0, tooltip = "text")
 ```
 
-First thing we can do is compare the current and future average skills data.  Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal.  From the plot below you can see that for the the composite score, the skills with the highest scores when weighted by job openings are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
+First thing we can do is compare the current and future average skills data.  Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal.  From the plot below you can see that for the the composite score, the skills with the highest scores are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
 
 ```{r}
 plt1 <- ggplot(tbbl, aes(current, future, text=element_name))+
   geom_abline(slope=1, intercept = 0, col="white", lwd=1)+
   geom_point(alpha=.25, size=3)+
   facet_wrap(~thing)+
-  labs(title="Skills: Important now vs. Important in future.",
-       x="Skills weighted by current employment",
-       y="Skills weighted by job openings")
+  labs(title="Average Skills: now vs. future.",
+       x="weighted by current employment",
+       y="weighted by job openings")
 
 plotly::ggplotly(plt1, tooltip = "text")
 ```
@@ -262,7 +263,7 @@ plt2 <- ggplot(tbbl, aes(current, diff, text=element_name))+
 plotly::ggplotly(plt2, tooltip = "text")
 ```
 
-These differences between current (employment) weighted and future (job openings) weighted average skill profiles gives an indication of how the BC average skill profile is set to change over the next 10 years.  We see that...
+These differences between current (employment) weighted and future (job openings) weighted average skill profiles gives an indication of how the BC average skill profile is set to change over the next 10 years.  We see that for the composite measure, the skills with the largest difference (future-current) are `r tbbl|>filter(thing=="composite")|>slice_max(diff, n=5)|>pull(element_name)|>paste(collapse=", ")`.
 
 ```{r}
 ggplot(tbbl, aes(diff, fct_reorder(element_name, diff)))+
@@ -278,7 +279,12 @@ ggplot(tbbl, aes(diff, fct_reorder(element_name, diff)))+
 One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. We can use hedonic estimation to estimate the wage semi-elasticities with the model:
 
 $$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times Skill_i + \epsilon$$
-i.e. holding all other skills constant, a 1 unit increase in skill $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. 
+i.e. holding all other skills constant, a 1 unit increase in skill level $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate.  In order to interpret these as causal effects, one must be willing to assume that for a given occupation the associated skill profile is "as good as" randomly assigned, which precludes
+
+1) Confounding variables that influence both skills and wages.
+2) Reverse causality, where the wage rate of an occupation influences its skill profile.
+
+One other thing to note is that linear models are additive, and thus ignore any interrelation between skills.
 
 ## Regression results
 
@@ -314,14 +320,14 @@ lmtest::bptest(weighted)
 Below are the effect sizes, with the regression p.values determining shade (dark ~ low p.value)
 
 ```{r}
+library(RColorBrewer)
 ggplot(sorted_weighted, aes(x=percent_change,
                             y=fct_reorder(term,percent_change),
                             fill=p.value
                             )
        )+
   geom_col()+
-  scale_fill_gradient(high = alpha("grey30", .05), low = alpha("grey30",.75),
-                       name = "p.value")+
+  scale_fill_distiller()+
   scale_x_continuous(labels=scales::percent)+
   labs(x="Change in income associated with 1 unit increase in skill level",
        y="",
@@ -329,14 +335,20 @@ ggplot(sorted_weighted, aes(x=percent_change,
   theme_minimal()
 ```
 
-## Residuals and compensating wage differentials
+## Residuals analysis:
 
-Skill is not the only factor that determines wages.  Some jobs are dangerous or otherwise unpleasant, and require a greater wage than skill alone would predict. At the other end of the spectrum are jobs that are fun, requiring a lower wage than skill alone would predict [@smith1776inquiry]. The next plot shows the occupations with the largest residuals from the weighted regression.  
+Skill is not the only factor that determines wages, and any omitted factors gets captured in the residual.  Note that the adjusted $R^2=$ `r round(glance(weighted)$adj.r.squared,2)` for the weighted regression, implying `r scales::percent(1-glance(weighted)$adj.r.squared, accuracy=1)` of the variation in wage is *not* explained by skill. 
+
+One interpretation of the residuals is that they capture what is know as compensating wage differentials [@smith1776inquiry]. Unpleasant or dangerous jobs require a greater wage than skill alone would predict, the opposite occurring for fun jobs. The next plot shows the occupations with the largest absolute value residuals from the weighted regression.  
 
 ```{r}
 residuals <- enframe(weighted$residuals)|>
-  filter(abs(value)>.5)
-plt <- ggplot(residuals, aes(value, fct_reorder(name,value), text=name))+geom_point(alpha=.25)+
+  mutate(noc=str_sub(name,1,1),
+         teer=str_sub(name,2,2))
+
+plt <- residuals|>
+  filter(abs(value)>.5)|>
+  ggplot(aes(value, fct_reorder(name,value), text=name))+geom_point(alpha=.25)+
      theme(axis.title.y =element_blank(),
            axis.text.y=element_blank(),
            axis.ticks.y=element_blank())+
@@ -346,6 +358,25 @@ plt <- ggplot(residuals, aes(value, fct_reorder(name,value), text=name))+geom_po
  plotly::ggplotly(plt, tooltip = "text")
 ```
 
+Another possibility is that educational attainment influences wages even once we control for skill: i.e. the piece of paper matters.  To investigate this possibility we plot the residuals from the skill regression vs TEER.
+
+```{r}
+ggplot(residuals, aes(value, teer))+
+  geom_vline(xintercept = 0, col="grey", lwd=1.5)+
+  geom_boxplot(fill="red", alpha=.25, outlier.shape = NA)+
+  geom_jitter(alpha=.25)+
+  theme_minimal()+
+  labs(title="Controling for skills, TEER 0 (Management) appears to be overpaid.",
+       x="Residuals from regressing wage on skill",
+       y="TEER")
+
+```
+
+There is no apparent relationship between TEER and the residuals for TEERs 1-5, but TEER 0 is an outlier, in the sense that their wages are systematically higher than their skill profile would suggest.  Some possible explanations:
+
+* Management jobs are typically not unionized: higher risk of termination.
+* Management jobs are typically not 9-5: lack of work/life balance.
+* ???
 
 
 
