@@ -1,6 +1,6 @@
 ---
 title: "I've got skills, they're multiplying..."
-subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/skill_value)"
+subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/skill_value){target='_blank'}"
 author: "Richard Martin"
 date: "`r Sys.Date()`"
 output:
@@ -22,6 +22,12 @@ library(readxl)
 jo_start <- "2024"
 jo_end <- "2033"
 #functions---------------
+
+rescale01 <- function(x){
+  (x-min(x, na.rm=TRUE))/(max(x, na.rm = TRUE)-min(x, na.rm=TRUE))
+}
+
+
 av_wrapper <- function(term, mod){
   car::avPlot(mod, variable=term)
   recordPlot()
@@ -48,10 +54,6 @@ skills_long <- read_excel(here("data", "Skills.xlsx"))%>%
   select(noc, everything())%>%
   group_by(noc, element_name, scale_name)%>%
   summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE))) #mapping from SOC to NOC is not one to one: mean give one value per NOC
-
-skill_dif <- skills_long%>%
-  pivot_wider(id_cols = c(noc, element_name), names_from = scale_name, values_from = data_value)%>%
-  mutate(abs_diff=abs(Importance-Level))
 
 #job openings-------------------
 
@@ -98,8 +100,13 @@ income_fyft <- income_fyft%>%
 # create skill measure-----------------
 
 skills <- skills_long%>%
-  pivot_wider(names_from = scale_name, values_from = data_value)%>%
-  mutate(composite=sqrt(Level*Importance))
+  pivot_wider(names_from = scale_name, values_from = data_value)|>
+  ungroup()|>
+  mutate(across(where(is.numeric), ~ 100*rescale01(.x)), #put on same 0-100 scale
+         composite=sqrt(Level*Importance))
+
+skill_dif <- skills%>%
+    mutate(abs_diff=abs(Importance-Level))
 
 joined <- inner_join(skills, jo_weight)%>%
   inner_join(emp_weight)%>%
@@ -120,9 +127,9 @@ tbbl <- joined%>%
 
 #income semi-elasticities--------------------------
 
-hedonic_data <- skills_long%>%
-  filter(scale_name=="Level")%>%
-  pivot_wider(id_cols = noc, names_from = element_name, values_from = data_value)%>%
+hedonic_data <- skills%>%
+  select(-Importance, -composite)%>%
+  pivot_wider(id_cols = noc, names_from = element_name, values_from = Level)%>%
   inner_join(emp_weight)%>%
   separate(noc, into=c("noc","description"), sep = ": ")%>%
   inner_join(income_fyft)%>%
@@ -195,15 +202,20 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ## A composite measure of skills
 
-So we have two different measures of each skill: its level and importance. It would be nice to have a single measure that captures both the level and the importance. To do so we take the geometric mean of these two measures.
+So we have two different measures of each skill: its level and importance, both on different scales.  The first step we take is to rescale the data so both level and importance are both on the same relative scale from 0--100, using function
+
+$$f(x)=\frac{x-\min(x)}{\max(x)-\min(x)}$$
+
+
+Next, we use the rescaled variables to create a single measure that captures both the level and the importance. To do so we take the geometric mean of these two rescaled measures.
 
 $$composite=\sqrt{level \times importance}$$
 
-The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 3 and a level of 5 yields a lower composite measure than if both measures were 4: the difference between level and importance is penalized. Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
+The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 40 and a level of 60 yields a lower composite measure than if both measures were 50: the difference between level and importance is penalized. Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
 
 ```{r}
 hist(skill_dif$abs_diff,
-     main="Level and Importance are within +/- 1 for almost all values",
+     main="Level and Importance are within +/- 10 for almost all values",
      xlab="|Importance-Level|")
 ```
 
@@ -300,7 +312,7 @@ plot(weighted, ask = FALSE)
 ```
 
 -   Residuals vs. Fitted: no obvious relationship between residuals and fitted values, which is good.
--   Q-Q residuals: Non normal residuals (fat tailed distribution), which is bad for inference, but because we have more than 10 observations per parameter we are ok: @weisberg2005applied.\
+-   Q-Q residuals: Non normal residuals (fat tailed distribution), which is bad for inference, but because we have more than 10 observations per parameter we are ok: @schmidt2018linear
 -   Scale-Location: looks ok, but might as well check for heteroskedasticity... all good.
 
 ```{r, results='asis'}
