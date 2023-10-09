@@ -26,8 +26,6 @@ jo_end <- "2033"
 rescale01 <- function(x){
   (x-min(x, na.rm=TRUE))/(max(x, na.rm = TRUE)-min(x, na.rm=TRUE))
 }
-
-
 av_wrapper <- function(term, mod){
   car::avPlot(mod, variable=term)
   recordPlot()
@@ -102,7 +100,7 @@ income_fyft <- income_fyft%>%
 skills <- skills_long%>%
   pivot_wider(names_from = scale_name, values_from = data_value)|>
   ungroup()|>
-  mutate(across(where(is.numeric), ~ 100*rescale01(.x)), #put on same 0-100 scale
+  mutate(across(where(is.numeric), ~ 10*rescale01(.x)), #put on same 0-10 scale
          composite=sqrt(Level*Importance))
 
 skill_dif <- skills%>%
@@ -140,7 +138,6 @@ hedonic_data <- skills%>%
 weighted <- lm(income~ . -emp_weight, weights = emp_weight, data=hedonic_data)
 unweighted <- lm(income~ . -emp_weight,  data=hedonic_data)
 
-
 sorted_weighted <- weighted%>%
   tidy()%>%
   filter(term!="(Intercept)")%>%
@@ -148,7 +145,6 @@ sorted_weighted <- weighted%>%
   arrange(desc(estimate))%>%
   mutate(av_plot=map(term, av_wrapper, weighted),
          term=str_replace_all(term, "`",""))
-
 
 ```
 
@@ -202,20 +198,20 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ## A composite measure of skills
 
-So we have two different measures of each skill: its level and importance, both on different scales.  The first step we take is to rescale the data so both level and importance are both on the same relative scale from 0--100, using function
+So we have two different measures of each skill: its level and importance, both on different scales.  The first step we take is to rescale the data so both level and importance are both on the same relative scale from 0--10, using function
 
-$$f(x)=\frac{x-\min(x)}{\max(x)-\min(x)}$$
+$$f(x)=10\frac{x-\min(x)}{\max(x)-\min(x)}$$
 
 
 Next, we use the rescaled variables to create a single measure that captures both the level and the importance. To do so we take the geometric mean of these two rescaled measures.
 
 $$composite=\sqrt{level \times importance}$$
 
-The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 40 and a level of 60 yields a lower composite measure than if both measures were 50: the difference between level and importance is penalized. Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
+The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 4 and a level of 6 yields a lower composite measure than if both measures were 5: the difference between level and importance is penalized. Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
 
 ```{r}
 hist(skill_dif$abs_diff,
-     main="Level and Importance are within +/- 10 for almost all values",
+     main="Level and Importance are within +/- 1 for almost all values",
      xlab="|Importance-Level|")
 ```
 
@@ -243,7 +239,7 @@ plt0 <- ggplot(both, aes(jo_weight,
 plotly::ggplotly(plt0, tooltip = "text")
 ```
 
-First thing we can do is compare the current and future average skills data. Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal. From the plot below you can see that for the the composite score, the skills with the highest scores are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
+First thing we can do is compare the current and future average skills data. Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal. Hovering over the points in the plot below the skills with the highest scores are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
 
 ```{r}
 plt1 <- ggplot(tbbl, aes(current, future, text=element_name))+
@@ -279,14 +275,15 @@ ggplot(tbbl, aes(diff, fct_reorder(element_name, diff)))+
   facet_wrap(~thing)+
   labs(title="Difference between future and current weighted skills",
        x="skills weighted by job openings - skills weighted by employment",
-       y="")
+       y="")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 ```
 
 ## Relationship between skill *level* and wage rate (income for now, wages come November)
 
 One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. We can use hedonic estimation to estimate the wage semi-elasticities with the model:
 
-$$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times Skill_i + \epsilon$$ i.e. holding all other skills constant, a 1 unit increase in skill level $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. In order to interpret these as causal effects, one must be willing to assume that for a given occupation the associated skill profile is "as good as" randomly assigned, which precludes
+$$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times level_i + \epsilon$$ i.e. holding all other skills constant, a 1 unit increase in skill level $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. In order to interpret these as causal effects, one must be willing to assume that for a given occupation the associated skill profile is "as good as" randomly assigned, which precludes
 
 1)  Confounding variables that influence both skills and wages.
 2)  Reverse causality, where the wage rate of an occupation influences its skill profile.
@@ -375,7 +372,6 @@ ggplot(residuals, aes(value, teer))+
   labs(title="Controling for skills, TEER 0 (Management) appears to be overpaid.",
        x="Residuals from regressing wage on skill",
        y="TEER")
-
 ```
 
 There is no apparent relationship between TEER and the residuals for TEERs 1-5, but TEER 0 is an outlier, in the sense that their wages are systematically higher than their skill profile would suggest. Some possible explanations:
