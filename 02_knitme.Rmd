@@ -504,7 +504,7 @@ Rather than utilizing a single decision tree, we can create a forest of trees. F
 
 Once we have created a forest of trees we can use this "ensemble" to predict wages. The act of averaging across many trees reduces the variance when compared to a single decision tree. One of the outputs of a random forest is a measure of variable importance: How important was each skill (on average) in predicting wage.
 
-```{r, cache=TRUE}
+```{r, cache=TRUE, message=FALSE}
 set.seed(123)
 skill_forest <- cforest(income~., data=skills_income, mtry = 10, ntree = 500, cores = 3)
 var_imp <- varimp(skill_forest)
@@ -518,6 +518,27 @@ ggplot(var_imp, aes(x=importance, y=fct_reorder(skill, importance)))+
   theme_minimal()+
   theme(axis.text.x=element_blank(),
         axis.ticks.x=element_blank())
+
+plt <- skills_income|>
+  select(income)|>
+  rownames_to_column("noc")|>
+  full_join(tibble(noc=names(predict(skill_forest)), prediction=predict(skill_forest)))|>
+  ggplot(aes(income, 
+             prediction, 
+             text=paste("Occupation:", noc,
+                        "\n Median Income:", scales::dollar(income),
+                        "\n Prediction:", scales::dollar(prediction)
+                        )))+
+  geom_abline(slope=1, intercept = 0)+
+  geom_point(alpha=.1)+
+  scale_x_continuous(trans="log10", labels = scales::dollar)+
+  scale_y_continuous(trans="log10", labels = scales::dollar)+
+  labs(x="Median Income",
+       y="Prediction of Random Forest",
+       title="In sample predictions of Random Forest"
+       )
+
+wrapR::plotlify(plt,"",15)
 ```
 
 # References
