@@ -18,10 +18,41 @@ library(here)
 library(janitor)
 library(broom)
 library(readxl)
+library(partykit)
+library(ggparty)
 #constants---------------------
 jo_start <- "2024"
 jo_end <- "2033"
 #functions---------------
+
+weighted_average <- function(skills, weights){
+  tbbl <- inner_join(skills, weights)|>
+    filter(scale_name=="Level")|>
+    summarize(score=sum(data_value*weight))|>
+    pull(score)
+}
+
+get_growth <- function(tbbl){
+  start <- tbbl$weighted_average[tbbl$year==min(tbbl$year)]
+  end <- tbbl$weighted_average[tbbl$year==max(tbbl$year)]
+  end/start-1
+}
+
+
+ave_plot <- function(tbbl, scales, reorder_by){
+  subtitle <- if_else(scales=="free", "...arranged by rate of change", "...arranged by levels")
+  ggplot(tbbl, aes(year, weighted_average))+
+    geom_path(alpha=.5)+
+    geom_point(aes(colour=weights))+
+    scale_x_continuous(breaks=seq((as.numeric(jo_start)-1), as.numeric(jo_end), by=5))+
+    facet_wrap(~fct_reorder(element_name, get(reorder_by), .desc = TRUE), scales = scales)+
+    labs(x=NULL,
+         y=NULL,
+         colour="Weighted by",
+    title="Weighted average skills for BC",
+    subtitle=subtitle)+    
+    theme(legend.position = "bottom")
+}
 
 rescale01 <- function(x){
   (x-min(x, na.rm=TRUE))/(max(x, na.rm = TRUE)-min(x, na.rm=TRUE))
@@ -37,6 +68,9 @@ get_noc <- function(str){
     select(-description)
   temp
 }
+```
+
+```{r, include=FALSE, cache=TRUE}
 # the program------------------------
 mapping <- read_excel(here("data","onet2019_soc2018_noc2016_noc2021_crosswalk.xlsx"))%>%
   mutate(noc2021=str_pad(noc2021, "left", pad="0", width=5))%>%
@@ -53,22 +87,35 @@ skills_long <- read_excel(here("data", "Skills.xlsx"))%>%
   group_by(noc, element_name, scale_name)%>%
   summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE))) #mapping from SOC to NOC is not one to one: mean give one value per NOC
 
+skills_nested <- skills_long|>
+  group_by(element_name)|>
+  nest()|>
+  rename(skills=data)
+
 #job openings-------------------
 
-jo_weight <- read_excel(here("data", "jo_rich.xlsx"), skip = 3)%>%
+jo <- read_excel(here("data", "jo_rich.xlsx"), skip = 3)%>%
   janitor::remove_constant()%>%
+  filter(NOC!="#T")%>%
   pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "jo")%>%
   filter(year>=jo_start)%>%
-  group_by(NOC, Description)%>%
-  summarize(job_openings=sum(jo))%>%
-  filter(NOC!="#T")%>%
   mutate(NOC=str_replace_all(NOC, "#",""))%>%
-  unite(noc, "NOC","Description", sep=": ")%>%
+  unite(noc, "NOC","Description", sep=": ")
+  
+jo_weight <- jo|>  
+  group_by(noc)%>%
+  summarize(job_openings=sum(jo))%>%
   ungroup()%>%
   mutate(job_openings=if_else(job_openings<0,0,job_openings),
     jo_weight=job_openings/sum(job_openings))%>%
   select(-job_openings)
 
+jo_nested <- jo|>
+  group_by(year)|>
+  mutate(weight=jo/sum(jo))|>
+  select(-jo)|>
+  nest()
+ 
 #employment----------------------------------------
 
 emp_weight <- vroom::vroom(here("data","employment.csv"), skip = 2)%>%
@@ -77,11 +124,26 @@ emp_weight <- vroom::vroom(here("data","employment.csv"), skip = 2)%>%
          NOC!="#T")%>%
   mutate(NOC=str_replace_all(NOC, "#",""))%>%
   unite(noc, "NOC","Description", sep=": ")%>%
-  mutate(emp_weight=`2023`/sum(`2023`))%>%
-  select(noc, emp_weight)
+  mutate(weight=`2023`/sum(`2023`))%>%
+  select(noc, weight)
 
-both <- full_join(emp_weight, jo_weight)
-jo_emp_cor <- with(both, round(cor(jo_weight, emp_weight), 2))
+emp_nested <- tibble(year="2023", data=list(emp_weight))
+weights_nested <- full_join(emp_nested, jo_nested)|>
+  rename(weights=data)
+
+skills_and_weights <- cross_join(skills_nested, weights_nested)|>
+  mutate(weighted_average=map2_dbl(skills, weights, weighted_average))|>
+  select(-skills, -weights)|>
+  group_by(element_name)|>
+  mutate(year=as.numeric(year),
+         weights=if_else(year >= as.numeric(jo_start), "Job Openings", "Employment"))|>
+  nest()|>
+  mutate(growth_rate=map_dbl(data, get_growth))|>
+  unnest(data)
+
+
+both <- full_join(emp_weight, jo_weight)|>
+  rename(emp_weight=weight)
 
 #income data--------------------------
 
@@ -95,35 +157,26 @@ income_fyft <- income_fyft%>%
     select(-noc, -everybody)%>%
     unnest(nocdf)
 
-# create skill measure-----------------
+#skills_income-----------------------
+
+skills_income <- skills_long%>%
+  separate(noc, into=c("noc","description"), sep = ": ")%>%
+  inner_join(income_fyft)|>
+  filter(scale_name=="Level")|>
+  select(-scale_name)|>
+  pivot_wider(names_from = element_name, values_from = data_value)|>
+  unite(noc, noc, description, sep=": ")|>
+  column_to_rownames(var="noc")|>
+  na.omit()|>
+  arrange(desc(income))
+
+#income semi-elasticities--------------------------
 
 skills <- skills_long%>%
   pivot_wider(names_from = scale_name, values_from = data_value)|>
   ungroup()|>
   mutate(across(where(is.numeric), ~ 10*rescale01(.x)), #put on same 0-10 scale
          composite=sqrt(Level*Importance))
-
-skill_dif <- skills%>%
-    mutate(abs_diff=abs(Importance-Level))
-
-joined <- inner_join(skills, jo_weight)%>%
-  inner_join(emp_weight)%>%
-  group_by(element_name)%>%
-  summarize(future_importance=sum(Importance*jo_weight),
-            future_level=sum(Level*jo_weight),
-            future_composite=sum(composite*jo_weight),
-            current_importance=sum(Importance*emp_weight),
-            current_level=sum(Level*emp_weight),
-            current_composite=sum(composite*emp_weight)
-            )
-
-tbbl <- joined%>%
-  pivot_longer(cols=-element_name)|>
-  separate(name, c("when","thing"), sep="_")%>%
-  pivot_wider(id_cols = c(element_name, thing), names_from = when, values_from = value)%>%
-  mutate(diff=future-current)
-
-#income semi-elasticities--------------------------
 
 hedonic_data <- skills%>%
   select(-Importance, -composite)%>%
@@ -135,8 +188,8 @@ hedonic_data <- skills%>%
   unite(noc, noc, description, sep=": ")%>%
   column_to_rownames("noc")
 
-weighted <- lm(income~ . -emp_weight, weights = emp_weight, data=hedonic_data)
-unweighted <- lm(income~ . -emp_weight,  data=hedonic_data)
+weighted <- lm(income~ . -weight, weights = weight, data=hedonic_data)
+unweighted <- lm(income~ . -weight,  data=hedonic_data)
 
 sorted_weighted <- weighted%>%
   tidy()%>%
@@ -196,99 +249,89 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ![](onet_question.png)
 
-## A composite measure of skills
+## Analysis:
 
-So we have two different measures of each skill: its level and importance, both on different scales.  The first step we take is to rescale the data so both level and importance are both on the same relative scale from 0--10, using function
+We attempt to answer two questions:
 
-$$f(x)=10\frac{x-\min(x)}{\max(x)-\min(x)}$$
+1)  How do BC's future skill needs differ from the present?
+2)  Is there a relationship between skills and wages?
 
+## Future skill needs
 
-Next, we use the rescaled variables to create a single measure that captures both the level and the importance. To do so we take the geometric mean of these two rescaled measures.
+The future demand for skills may differ from the current demand for skills in 3 ways:
 
-$$composite=\sqrt{level \times importance}$$
+1)  The skill profile of an occupation may change over time.
+2)  The set of occupations may change over time (e.g. a new occupation is introduced).
+3)  The occupation mix (i.e. proportion of people in each occupation) may change over time.
 
-The geometric mean has the attractive property that level and importance are (imperfect) complements when creating the composite measure. e.g. an importance of 4 and a level of 6 yields a lower composite measure than if both measures were 5: the difference between level and importance is penalized. Note that this example is extreme: the correlation between the level and importance is `r with(skill_dif, round(cor(Importance, Level),2))`, so the disparity between the level and importance is small.
+There is not much that we can do to predict skill changes due to 1) or 2), but we can investigate 3) by using data from the BC Labour Market Outlook (LMO). The LMO forecasts job openings over the next 10 years. In what follows, we take the skill data for these 500ish occupations and create a weighted average for each skill level. The weights are employment for the current year, and job openings for each of the following 10 years.
 
-```{r}
-hist(skill_dif$abs_diff,
-     main="Level and Importance are within +/- 1 for almost all values",
-     xlab="|Importance-Level|")
+```{r, fig.width=16, fig.height=9}
+ave_plot(skills_and_weights, "free", "growth_rate")
 ```
 
-## Skills in the BC context
+In the plot above it appears that the average skill profile is changing rapidly over time for many skills, with most skills showing an increase in their weighted average level. However note the scale of the y-axis... Here is another view where all the plots share the same y-axis, which includes the origin.
 
-So we have skills data for 500 odd occupations, but what we are interested in is the average current and future skill profiles for BC. For the current skill profile, we can weight the skills by the proportion of British Columbians employed in each occupation. For the future skill profile, we can weigh the skills by projected job openings. Note that current employment and projected job openings are highly correlated: r=`r jo_emp_cor`.
-
-```{r, warning=FALSE}
-plt0 <- ggplot(both, aes(jo_weight,
-                         emp_weight, 
-                         text=paste0(noc, 
-                                     "\n Future weight = ",
-                                     scales::percent(jo_weight, accuracy = .1), 
-                                     "\n Current weight = ",
-                                      scales::percent(emp_weight, accuracy = .1))))+
-  geom_abline(slope=1, intercept = 0, col="white", lwd=2)+
-  geom_point(alpha=.1)+
-  scale_x_continuous(trans="log", labels=scales::percent)+
-  scale_y_continuous(trans="log", labels=scales::percent)+
-  labs(x="weights based on job openings",
-       y="weights based on employment",
-       title="Future vs. Current weights."
-       )
-
-plotly::ggplotly(plt0, tooltip = "text")
+```{r, fig.width=16, fig.height=9}
+ave_plot(skills_and_weights, "fixed", "weighted_average")
 ```
 
-First thing we can do is compare the current and future average skills data. Note that because employment and job openings are so highly correlated the difference between the two weightings is minimal. Hovering over the points in the plot below the skills with the highest scores are `r tbbl%>%filter(thing=="composite")%>%slice_max(future, n=5)%>%pull(element_name)%>%paste(collapse = ", ")`.
+The stability in the skill profile over time is due to the fact that current employment and future job openings are highly correlated, implying that the weights are not changing much over time.
 
-```{r}
-plt1 <- ggplot(tbbl, aes(current, future, text=element_name))+
-  geom_abline(slope=1, intercept = 0, col="white", lwd=1)+
-  geom_point(alpha=.25, size=3)+
-  facet_wrap(~thing)+
-  labs(title="Average Skills: now vs. future.",
-       x="weighted by current employment",
-       y="weighted by job openings")
+## Relationship between skill level and wage rate (income for now, wages come November)
 
-plotly::ggplotly(plt1, tooltip = "text")
+One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. First thing we do is plot the skills data:
+
+```{r, fig.width=10, fig.height=6}
+skills_income|>
+  select(-income)|>
+  t()|>
+  as.data.frame()|>
+  heatmaply::heatmaply(dendrogram = "row", main = "Occupations (sorted by income) vs. Skills (clustered)", showticklabels=c(FALSE, FALSE))
 ```
 
-In the plot above it is difficult to ascertain the difference in average skills when weighting by job openings or employment. The difference is more apparent when plotted against the current average skill, allowing us to see the skills for which the difference is *relatively* large. However, note that the scale of the difference is quite small relative to the average skill scores: this is the result of projected job openings being highly correlated with current employment.
+Take aways:
 
-```{r}
-plt2 <- ggplot(tbbl, aes(current, diff, text=element_name))+
-  geom_abline(slope=0, intercept = 0, col="white", lwd=1)+
-  geom_point(alpha=.25, size=3)+
-  facet_wrap(~thing)+
-  labs(title="Skills: Important now vs. projected difference.",
-       x="Skills weighted by current employment",
-       y="Future weighted skills - current weighted skills")
+1)  There are two main clusters of skills, which can be broadly characterized as generic (bottom) vs. specific (top).
+    -   Generic skills have a fairly consistent colour of green: these skills are important across all occupations.
+    -   Specific skills have a more variable blueish colour: these skills are not as important in general, but they *are* important for certain occupations.
+2)  There appears to be a relationship between skills and income:
+    -   The occupations are organized by income, with high income to the left, where skill levels are higher as well.
+3)  Highly paid professions where the generic skills are relatively low have relatively high specific skills:
+    -   Graphically this corresponds to a vertical stripe towards the left of the plot, where at the bottom it is darker (relatively low levels of generic skills) and the top is lighter (relatively high levels of specific skills)
 
-plotly::ggplotly(plt2, tooltip = "text")
+The above suggests that we might want to look more closely at the pairwise correlations between the skills and income. In the plot below the variables are organized in terms of their correlation with income.
+
+```{r, fig.width=10, fig.height=6}
+skills_cor <- cor(skills_income)|>
+  as.data.frame()|>
+  arrange(desc(income))
+
+skills_cor <- skills_cor|>
+  select(row.names(skills_cor))
+
+heatmaply::heatmaply(skills_cor,
+                     dendrogram = "none",
+                     main = "Pairwise correlations between income and skills",
+                     showticklabels=c(FALSE, FALSE),
+                     key.title = "Correlation"
+                     )
 ```
 
-These differences between current (employment) weighted and future (job openings) weighted average skill profiles gives an indication of how the BC average skill profile is set to change over the next 10 years. We see that for the composite measure, the skills with the largest difference (future-current) are `r tbbl|>filter(thing=="composite")|>slice_max(diff, n=5)|>pull(element_name)|>paste(collapse=", ")`.
+Take aways:
 
-```{r}
-ggplot(tbbl, aes(diff, fct_reorder(element_name, diff)))+
-  geom_col(alpha=.5)+
-  facet_wrap(~thing)+
-  labs(title="Difference between future and current weighted skills",
-       x="skills weighted by job openings - skills weighted by employment",
-       y="")+
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
-```
+1)  Consistent with the previous heatmap of the raw data, we see two distinct groups of skills, where scores are highly correlated within a group (yellow), but negatively correlated between groups (blue).
+2)  The generic skills are more highly correlated with income than the specific skills.
+3)  Certain skill measures might be redundant: e.g. correlation between repairing and equipement maintenance is .99
 
-## Relationship between skill *level* and wage rate (income for now, wages come November)
+## Hedonic estimation:
 
-One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. We can use hedonic estimation to estimate the wage semi-elasticities with the model:
+If we are willing to assume that skill interactions are *not* an important determinant of wages, we can use hedonic estimation to estimate the wage semi-elasticities with the model:
 
 $$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times level_i + \epsilon$$ i.e. holding all other skills constant, a 1 unit increase in skill level $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. In order to interpret these as causal effects, one must be willing to assume that for a given occupation the associated skill profile is "as good as" randomly assigned, which precludes
 
 1)  Confounding variables that influence both skills and wages.
 2)  Reverse causality, where the wage rate of an occupation influences its skill profile.
-
-One other thing to note is that linear models are additive, and thus ignore any interrelation between skills.
 
 ## Regression results
 
@@ -378,6 +421,101 @@ There is no apparent relationship between TEER and the residuals for TEERs 1-5, 
 
 -   Management jobs are typically not unionized: higher risk of termination.
 -   Management jobs are typically not 9-5: lack of work/life balance.
--   ???
+
+## Skill interactions:
+
+As alluded to above, the hedonic analysis above assumes that skill interactions are not important: it only captures the direct effect of skill changes. One could easily imagine complementarities between skills: e.g. increasing two skills in tandem yields a greater increase in wage than if the skills increased individually. To allow for these types of interactions we move to a new modeling technique, decision trees.
+
+### Conditional inference trees
+
+The algorithm utilized below is a statistical and machine learning method used for building decision trees. It is designed to create unbiased decision trees by using statistical significance as a decision criteria. Here's how the algorithm works:
+
+1)  Select a splitting variable: The algorithm chooses the skill that is most closely related to income.
+
+2)  Split the data: The algorithm splits the data (by the variable above) in such a way that maximizes the differences in wages between the two resulting groups.
+
+3)  Test the Split: The algorithm then tests if the split is statistically significant. In other words, it checks if the division of the data into these groups provides meaningful information for making predictions.
+
+4)  Repeat the Process: If the split is significant, the algorithm continues to divide the data further, selecting the "best" variable to split on at each step. This process is repeated recursively until it decides that further splits are not significantly different.
+
+Suppose that we had only two explanatory variables, $X1$ and $X2$, and the response is $R$. A decision tree might look something like this:
+
+![](tree_and_space.png)
+
+
+The fact that decision trees allow for interactions between the explanatory variables can be seen most easily in the 3-D representation of the model:
+
+![](two_and_three_D.png)
+
+The key idea behind the Conditional Inference Tree algorithm is that it uses statistical tests at each step to ensure that the splits are based on meaningful patterns in the data, which leads to more accurate decision trees: less bias, less variance (over-fitting). Here is a conditional inference tree based on our data:
+
+```{r, fig.height=9, fig.width=16}
+skill_tree <- ctree(income~., data=skills_income)
+
+ggparty(skill_tree,
+        add_vars = list(mean_income = function(data, node) scales::dollar(mean(node$data$income), accuracy = 1)))+
+  geom_edge() +
+  geom_edge_label(mapping = aes(label = paste(substr(breaks_label, start = 1, stop = 15))))+
+  geom_node_label(
+    line_list = list(
+      aes(label = splitvar),
+      aes(label = paste("N =", nodesize)),
+      aes(label = paste("p =",
+                        formatC(p.value,
+                                format = "e",
+                                digits = 2)))
+    ),
+    line_gpar = list(
+      list(size = 13),
+      list(size = 10),
+      list(size = 10)
+    ),
+    ids = "inner"
+  ) +
+  geom_node_label(aes(label = paste0("Average = ", mean_income, "\n N = ", nodesize)),
+                  ids = "terminal", nudge_y = -0.3, nudge_x = 0.01
+  ) +
+  geom_node_plot(
+    gglist = list(
+      geom_boxplot(aes(x="", y=income), fill="red", alpha=.5, outlier.shape = NA),
+      geom_jitter(aes(x="", y=income), alpha=.2, height=0),
+      scale_y_continuous(trans="log10", labels = scales::dollar),
+      labs(x="", y=""),
+      theme_minimal()
+    )
+  )
+```
+
+Take aways:
+
+1)  Complex problem solving is the skill that is the "best" predictor of wage.
+2)  Operations monitoring, systems analysis, and operations and control also are significant predictors of wage.
+
+A problem with decision trees is that they are not very robust: a small change in the data can lead to a very different tree. To overcome this issue, we move on to our next modelling technique:
+
+### Random forests
+
+Rather than utilizing a single decision tree, we can create a forest of trees. For each tree in the forest, we introduce some randomness:
+
+1)  Each tree is based on a different random subset of occupations.
+2)  For each decision node, only a random subset of skills are considered.
+
+Once we have created a forest of trees we can use this "ensemble" to predict wages. The act of averaging across many trees reduces the variance when compared to a single decision tree. One of the outputs of a random forest is a measure of variable importance: How important was each skill (on average) in predicting wage.
+
+```{r, cache=TRUE}
+set.seed(123)
+skill_forest <- cforest(income~., data=skills_income, mtry = 10, ntree = 500, cores = 3)
+var_imp <- varimp(skill_forest)
+var_imp <- tibble(skill=names(var_imp), importance=var_imp)
+
+ggplot(var_imp, aes(x=importance, y=fct_reorder(skill, importance)))+
+  geom_col(alpha=.5)+
+  labs(y=NULL,
+       x="Skill Importance",
+       title="Random Forest variable importance plot.")+
+  theme_minimal()+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
 
 # References
