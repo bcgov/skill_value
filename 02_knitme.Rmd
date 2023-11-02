@@ -215,6 +215,14 @@ sorted_weighted <- weighted%>%
 
 In a nutshell we should care about skills because labour is not fungible: we all differ in terms of the skills, knowledge and experience we possess. Likewise, employers are not simply looking for someone with a pulse: for every position there is a unique bundle of skills, knowledge and experience which would maximize the value of the match. The better the match, the greater the surplus that can be shared between the employer and the employee.
 
+## Outline:
+
+We attempt to answer two questions:
+
+1)  How do BC's future skill needs differ from the present?
+2)  What is the relationship between skills and wages?
+
+
 ## ONET Skills
 
 The Occupational Information Network (ONET) is a comprehensive database developed by the U.S. Department of Labor that provides detailed information about various occupations. One of the key components of ONET is the Skills section, which categorizes the skills required for different job roles. ONET's Skills data includes a wide range of skills that are relevant to specific occupations, helping individuals, employers, educators, and policymakers understand the skill requirements of different jobs and industries.
@@ -249,12 +257,6 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ![](onet_question.png)
 
-## Analysis:
-
-We attempt to answer two questions:
-
-1)  How do BC's future skill needs differ from the present?
-2)  Is there a relationship between skills and wages?
 
 ## Future skill needs
 
