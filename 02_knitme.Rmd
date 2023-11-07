@@ -20,6 +20,7 @@ library(broom)
 library(readxl)
 library(partykit)
 library(ggparty)
+library(ggridges)
 #constants---------------------
 jo_start <- "2024"
 jo_end <- "2033"
@@ -222,7 +223,6 @@ We attempt to answer two questions:
 1)  How do BC's future skill needs differ from the present?
 2)  What is the relationship between skills and wages?
 
-
 ## ONET Skills
 
 The Occupational Information Network (ONET) is a comprehensive database developed by the U.S. Department of Labor that provides detailed information about various occupations. One of the key components of ONET is the Skills section, which categorizes the skills required for different job roles. ONET's Skills data includes a wide range of skills that are relevant to specific occupations, helping individuals, employers, educators, and policymakers understand the skill requirements of different jobs and industries.
@@ -257,7 +257,6 @@ Workers, supervisors and subject matter experts are asked about the importance a
 
 ![](onet_question.png)
 
-
 ## Future skill needs
 
 The future demand for skills may differ from the current demand for skills in 3 ways:
@@ -282,27 +281,43 @@ The stability in the skill profile over time is due to the fact that current emp
 
 ## Relationship between skill level and wage rate (income for now, wages come November)
 
-One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. First thing we do is plot the skills data:
+One way to think about workers is that we are just a bundle of attributes (skills, knowledge, experience) that employers want to rent. If the goal of a job seeker is to maximize their wages, then it makes sense to invest in the skills that are most highly valued by employers. First thing we do is plot the distribution of skill levels:
+
+```{r, fig.width=10, fig.height=6, message=FALSE}
+skills_long|> 
+  filter(scale_name=="Level")|>
+  select(-scale_name)|>
+  ggplot(aes(x = data_value, 
+           y = fct_reorder(element_name, data_value, mean), 
+           fill = 0.5 - abs(0.5 - after_stat(ecdf)))) +
+  stat_density_ridges(geom = "density_ridges_gradient", calc_ecdf = TRUE) +
+  scale_fill_viridis_c(name = "Tail probability", direction = -1)+
+  theme_minimal()+
+  labs(x="Skill Level",
+       y=NULL,
+       title="Density plots of skill levels, arranged by mean."
+       )
+```
+
+From this we can see skill levels differ substantially both in terms of their mean and dispersion. Next, lets look at how these skill levels are related to income.
 
 ```{r, fig.width=10, fig.height=6}
 skills_income|>
   select(-income)|>
   t()|>
   as.data.frame()|>
-  heatmaply::heatmaply(dendrogram = "row", main = "Occupations (sorted by income) vs. Skills (clustered)", showticklabels=c(FALSE, FALSE))
+  heatmaply::heatmaply(dendrogram = "row", main = "Occupations (sorted by income) vs. Skill levels (clustered)", showticklabels=c(FALSE, FALSE))
 ```
 
 Take aways:
 
-1)  There are two main clusters of skills, which can be broadly characterized as generic (bottom) vs. specific (top).
-    -   Generic skills have a fairly consistent colour of green: these skills are important across all occupations.
-    -   Specific skills have a more variable blueish colour: these skills are not as important in general, but they *are* important for certain occupations.
-2)  There appears to be a relationship between skills and income:
+1)  There are two main clusters of skill levels, which can be broadly characterized by whether their mean value is below or above 2.
+    -   High skill levels have a fairly consistent colour of green: these skill levels are high across most occupations (generic skills)
+    -   Low skill levels have a more variable blueish colour: these skill levels are lower in general, but *are* high for certain occupations. (specific skills)
+2)  There appears to be a relationship between skill levels and income:
     -   The occupations are organized by income, with high income to the left, where skill levels are higher as well.
-3)  Highly paid professions where the generic skills are relatively low have relatively high specific skills:
-    -   Graphically this corresponds to a vertical stripe towards the left of the plot, where at the bottom it is darker (relatively low levels of generic skills) and the top is lighter (relatively high levels of specific skills)
 
-The above suggests that we might want to look more closely at the pairwise correlations between the skills and income. In the plot below the variables are organized in terms of their correlation with income.
+The above suggests that we might want to look more closely at the pairwise correlations between the skill levels and income. In the plot below the skill levels are organized in terms of their correlation with income.
 
 ```{r, fig.width=10, fig.height=6}
 skills_cor <- cor(skills_income)|>
@@ -322,13 +337,15 @@ heatmaply::heatmaply(skills_cor,
 
 Take aways:
 
-1)  Consistent with the previous heatmap of the raw data, we see two distinct groups of skills, where scores are highly correlated within a group (yellow), but negatively correlated between groups (blue).
+1)  Consistent with the previous heatmap of the raw data, we see two distinct groups of skill levels, where scores are highly correlated within a group (yellow), but negatively correlated between groups (blue).
 2)  The generic skills are more highly correlated with income than the specific skills.
 3)  Certain skill measures might be redundant: e.g. correlation between repairing and equipement maintenance is .99
 
 ## Hedonic estimation:
 
-If we are willing to assume that skill interactions are *not* an important determinant of wages, we can use hedonic estimation to estimate the wage semi-elasticities with the model:
+If we are willing to assume that skill interactions[^1] are *not* an important determinant of wages, we can use hedonic estimation to estimate the wage semi-elasticities with the model:
+
+[^1]: e.g. An interaction occurs if increasing two skills in tandem yields a greater increase in wage than if the skills increased individually. 
 
 $$log(wage)=\hat{\beta_0}+\sum^{35}_{i=1}\hat{\beta_i} \times level_i + \epsilon$$ i.e. holding all other skills constant, a 1 unit increase in skill level $i$ is associated with a $100\times (e^{\hat{\beta_i}}-1)$% change in wage rate. In order to interpret these as causal effects, one must be willing to assume that for a given occupation the associated skill profile is "as good as" randomly assigned, which precludes
 
@@ -444,7 +461,6 @@ Suppose that we had only two explanatory variables, $X1$ and $X2$, and the respo
 
 ![](tree_and_space.png)
 
-
 The fact that decision trees allow for interactions between the explanatory variables can be seen most easily in the 3-D representation of the model:
 
 ![](two_and_three_D.png)
@@ -535,7 +551,7 @@ plt <- skills_income|>
   scale_y_continuous(trans="log10", labels = scales::dollar)+
   labs(x="Median Income",
        y="Prediction of Random Forest",
-       title="In sample predictions of Random Forest"
+       title="In-sample predictions of Random Forest"
        )
 
 wrapR::plotlify(plt,"",15)
